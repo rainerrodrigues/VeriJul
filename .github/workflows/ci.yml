@@ -1,0 +1,51 @@
+name: CI
+
+# Trigger the action on every push to main, and on any pull requests
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+# Cancel running jobs if you push a new commit to the same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Test on the latest Ubuntu. (Verilator is easiest to install on Linux)
+        os:
+          - ubuntu-latest
+        # Test on the latest stable Julia version, and the upcoming release
+        version:
+          - '1'
+          - 'pre'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies (Verilator & C++)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator g++ make
+
+      - name: Setup Julia
+        uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+
+      - name: Use Julia Cache
+        uses: julia-actions/cache@v2
+
+      - name: Build VeriJul Package
+        uses: julia-actions/julia-buildpkg@v1
+
+      - name: Run Hardware Tests
+        uses: julia-actions/julia-runtest@v1

@@ -1,0 +1,13 @@
+name = "VeriJul"
+uuid = "a90675a2-a9ae-420a-b66a-bece10430f60"
+version = "0.1.0"
+authors = ["Rainer Rodrigues"]
+
+[deps]
+EzXML = "8f5d6c58-4d21-5cfd-889c-e3ad7ee6a615"
+Libdl = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+
+[compat]
+Libdl = "1.11.0"
+Plots = "1.41.6"
