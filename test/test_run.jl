@@ -15,8 +15,9 @@ using .AutoBindings
 # Instantiating the simulation
 dut = VeriJul.Interop.VerilatedModel(so_path, :top_create)
 sim = VeriJul.Core.Simulator(dut)
+AutoBindings.enable_trace!(sim.dut, joinpath(dirname(so_path), "waveform.vcd"))
 
-AutoBindings.enable_trace!(sim.dut, abspath("build/wavefo
+VeriJul.Core.start_clock!(sim)
 
 println("--- Simulation Initialized ---")
 
