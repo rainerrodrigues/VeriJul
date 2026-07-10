@@ -2,8 +2,11 @@ using VeriJul
 
 println("--- Starting VeriJul Build Process ---")
 
+project_root = dirname(@__DIR__) 
+verilog_file = joinpath(project_root, "src", "filter.v")
+
 # Building the library
-so_path, binding_path = VeriJul.Builder.build_dut("src/filter.v", "filter")
+so_path, binding_path = VeriJul.Builder.build_dut(verilog_file, "filter")
 
 # Loading the bindings
 include(binding_path)
