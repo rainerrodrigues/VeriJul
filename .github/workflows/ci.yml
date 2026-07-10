@@ -20,6 +20,9 @@ jobs:
         with:
           version: ${{ matrix.julia-version }}
 
+      - name: Force CLI git for Pkg (avoids LibGit2_jll precompile issue)
+        run: echo "JULIA_PKG_USE_CLI_GIT=true" >> $GITHUB_ENV
+
       - name: Cache Julia packages
         uses: julia-actions/cache@v2
 
