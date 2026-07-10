@@ -1,6 +1,3 @@
-using Pkg
-Pkg.activate(dirname(@__DIR__)) 
-
 using VeriJul
 
 println("--- Starting VeriJul Build Process ---")
