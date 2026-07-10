@@ -7,7 +7,7 @@ include("Builder.jl")
 
 # Re-export the user-facing tools
 using .DSL: @tick, @testbench
-using .Core: Simulator, run_sim!
+using .Core: Simulator, start_clock!
 
 export @tick, Simulator, start_clock!
 
