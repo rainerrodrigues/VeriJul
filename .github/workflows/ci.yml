@@ -1,51 +1,40 @@
 name: CI
 
-# Trigger the action on every push to main, and on any pull requests
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
-
-# Cancel running jobs if you push a new commit to the same PR
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+    branches: [ main ]
 
 jobs:
   test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        # Test on the latest Ubuntu. (Verilator is easiest to install on Linux)
-        os:
-          - ubuntu-latest
-        # Test on the latest stable Julia version, and the upcoming release
-        version:
-          - '1'
-          - 'pre'
-
+        julia-version: ['1.10', '1.11']
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install System Dependencies (Verilator & C++)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y verilator g++ make
-
-      - name: Setup Julia
+      - name: Set up Julia
         uses: julia-actions/setup-julia@v2
         with:
-          version: ${{ matrix.version }}
+          version: ${{ matrix.julia-version }}
 
-      - name: Use Julia Cache
+      - name: Cache Julia packages
         uses: julia-actions/cache@v2
 
-      - name: Build VeriJul Package
+      - name: Instantiate project
         uses: julia-actions/julia-buildpkg@v1
 
-      - name: Run Hardware Tests
+      - name: Run tests
         uses: julia-actions/julia-runtest@v1
+
+  verilog-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Verilator
+        run: sudo apt-get update && sudo apt-get install -y verilator
+      - name: Lint Verilog sources
+        run: |
+          find src -name "*.v" -o -name "*.sv" | xargs -r verilator --lint-only
