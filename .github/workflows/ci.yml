@@ -10,21 +10,31 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         julia-version: ['1.10', '1.11']
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 🚀 FIX 2: Install Verilator in the same job as Julia!
+      - name: Install System Dependencies
+        run: sudo apt-get update && sudo apt-get install -y verilator g++ make
 
       - name: Set up Julia
         uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.julia-version }}
 
-      - name: Force CLI git for Pkg (avoids LibGit2_jll precompile issue)
+      - name: Force CLI git for Pkg
         run: echo "JULIA_PKG_USE_CLI_GIT=true" >> $GITHUB_ENV
 
       - name: Cache Julia packages
         uses: julia-actions/cache@v2
+
+      # 🚀 FIX 1: Delete the Manifest so Julia 1.11 doesn't panic over stdlib versions
+      - name: Remove Local Manifest
+        run: rm -f Manifest.toml
 
       - name: Instantiate project
         uses: julia-actions/julia-buildpkg@v1
@@ -32,12 +42,15 @@ jobs:
       - name: Run tests
         uses: julia-actions/julia-runtest@v1
 
+  # You can keep the linting job separate, but it also needs Verilator
   verilog-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - name: Install Verilator
         run: sudo apt-get update && sudo apt-get install -y verilator
+        
       - name: Lint Verilog sources
         run: |
           find src -name "*.v" -o -name "*.sv" | xargs -r verilator --lint-only
