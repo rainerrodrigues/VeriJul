@@ -9,5 +9,5 @@ Libdl = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
 Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
 
 [compat]
-Libdl = "1.11.0"
+Libdl = "1.10.0, 1.11.0"
 Plots = "1.41.6"

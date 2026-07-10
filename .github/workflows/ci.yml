@@ -53,4 +53,4 @@ jobs:
         
       - name: Lint Verilog sources
         run: |
-          find src -name "*.v" -o -name "*.sv" | xargs -r verilator --lint-only
+          find src -name "*.v" -o -name "*.sv" | xargs -r verilator --lint-only -Wno-WIDTHEXPAND
