@@ -1,14 +1,19 @@
 module VeriJul
 
 include("Interop.jl")
-include("Core.jl")
+include("SimCore.jl")
 include("DSL.jl")
 include("Builder.jl")
 
 # Re-export the user-facing tools
+using .Interop: VerilatedModel, eval_step!, destroy!
+using .SimCore: Simulator, start_clock!, stop_clock!
 using .DSL: @tick, @testbench
-using .Core: Simulator, start_clock!
+using .Builder: build_dut
 
-export @tick, Simulator, start_clock!
+export VerilatedModel, eval_step!, destroy!,
+       Simulator, start_clock!, stop_clock!,
+       @tick, @testbench,
+       build_dut
 
 end

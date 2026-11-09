@@ -2,55 +2,59 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+    tags: ['*']
   pull_request:
-    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  # Cancel superseded runs on the same branch / PR
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Julia ${{ matrix.julia-version }} - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        julia-version: ['1.10', '1.11']
+        julia-version: ['1.10', '1.11', '1']
+        os: [ubuntu-latest]
+        include:
+          - julia-version: '1'
+            os: macos-latest
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 🚀 FIX 2: Install Verilator in the same job as Julia!
-      - name: Install System Dependencies
-        run: sudo apt-get update && sudo apt-get install -y verilator g++ make
+      - name: Install Verilator (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y verilator g++
 
-      - name: Set up Julia
-        uses: julia-actions/setup-julia@v2
+      - name: Install Verilator (macOS)
+        if: runner.os == 'macOS'
+        run: brew install verilator
+
+      - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.julia-version }}
 
-      - name: Force CLI git for Pkg
-        run: echo "JULIA_PKG_USE_CLI_GIT=true" >> $GITHUB_ENV
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
 
-      - name: Cache Julia packages
-        uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-processcoverage@v1
+      - uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
-      # 🚀 FIX 1: Delete the Manifest so Julia 1.11 doesn't panic over stdlib versions
-      - name: Remove Local Manifest
-        run: rm -f Manifest.toml
-
-      - name: Instantiate project
-        uses: julia-actions/julia-buildpkg@v1
-
-      - name: Run tests
-        uses: julia-actions/julia-runtest@v1
-
-  # You can keep the linting job separate, but it also needs Verilator
   verilog-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
       - name: Install Verilator
         run: sudo apt-get update && sudo apt-get install -y verilator
-        
       - name: Lint Verilog sources
-        run: |
-          find src -name "*.v" -o -name "*.sv" | xargs -r verilator --lint-only -Wno-WIDTHEXPAND
+        run: find examples test \( -name "*.v" -o -name "*.sv" \) -print0 | xargs -0 -r -n1 verilator --lint-only -Wno-WIDTHEXPAND

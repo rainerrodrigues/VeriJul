@@ -1,6 +1,6 @@
 module DSL
 
-using ..Core
+using ..SimCore: Simulator
 export @tick, @testbench
 
 """
@@ -18,13 +18,30 @@ end
 """
     @testbench func
 
-Wraps a standard function into an asynchronous Task so it can yield to the simulator.
+Defines `func` as usual and also a `launch_<func>(sim::Simulator)` that runs it
+as an asynchronous task, so it can wait on clock edges with [`@tick`](@ref VeriJul.DSL.@tick).
+
+```julia
+@testbench function drive(sim)
+    AutoBindings.set_in_data!(sim.dut, 0xFF)
+    @tick sim
+end
+
+task = launch_drive(sim)
+wait(task)
+```
 """
 macro testbench(expr)
     # Ensures the macro is applied to a function
-    @assert expr.head == :function || expr.head == :(=) "Must be applied to a function"
-    
-    func_name = expr.args[1].args[1]
+    (expr isa Expr && (expr.head == :function || expr.head == :(=))) ||
+        throw(ArgumentError("@testbench must be applied to a function definition"))
+
+    # Strip a return-type annotation / where clause to reach the call signature
+    sig = expr.args[1]
+    while sig isa Expr && sig.head in (:where, :(::))
+        sig = sig.args[1]
+    end
+    func_name = sig.args[1]
     
     return quote
         # Defines the user's function
