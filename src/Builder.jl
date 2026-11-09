@@ -20,7 +20,7 @@ end
 const MIN_VERILATOR = v"4.200"
 
 # Bump when the generated C++ changes, so cached builds are invalidated.
-const WRAPPER_VERSION = 2
+const WRAPPER_VERSION = 3
 
 """
     verilator_version() -> VersionNumber
@@ -91,21 +91,24 @@ function generate_bindings(ports::Vector{HardwarePort}, module_name::String)
     #include "verilated_vcd_c.h"
     #include "$V.h"
 
-    // Verilator's runtime calls sc_time_stamp() for \$finish/\$stop messages.
-    // It must be defined by the program; macOS refuses to link without it.
-    static double vj_time = 0;
-    double sc_time_stamp() { return vj_time; }
+    // Verilator's runtime may call sc_time_stamp() when a context's time is
+    // zero. It must be defined by the program (macOS refuses to link without
+    // it); real time lives in each model's own VerilatedContext.
+    double sc_time_stamp() { return 0; }
 
-    // One handle per model instance so several models can trace independently
+    // Each model gets its own context, so models of the same design (or a
+    // library that the OS keeps loaded after dlclose) never share time.
     struct Handle {
+        VerilatedContext* ctx;
         $V* top;
         VerilatedVcdC* tfp;
     };
 
     extern "C" {
         Handle* top_create() {
-            Verilated::traceEverOn(true);
-            return new Handle{new $V(), nullptr};
+            VerilatedContext* ctx = new VerilatedContext;
+            ctx->traceEverOn(true);
+            return new Handle{ctx, new $V(ctx, "TOP"), nullptr};
         }
 
         void top_enable_trace(Handle* h, const char* filename) {
@@ -116,7 +119,7 @@ function generate_bindings(ports::Vector{HardwarePort}, module_name::String)
         }
 
         void top_eval(Handle* h, uint64_t time) {
-            vj_time = static_cast<double>(time);
+            h->ctx->time(time);
             h->top->eval();
             if (h->tfp) h->tfp->dump(time);
         }
@@ -128,6 +131,7 @@ function generate_bindings(ports::Vector{HardwarePort}, module_name::String)
             h->top->final();
             if (h->tfp) { h->tfp->close(); delete h->tfp; }
             delete h->top;
+            delete h->ctx;
             delete h;
         }
     """

@@ -39,6 +39,7 @@ have_toolchain() = Sys.which("verilator") !== nothing &&
         @test occursin("void get_huge(Handle* h, uint32_t* out)", cpp)
         @test occursin("void top_settle(Handle* h)", cpp)
         @test occursin("double sc_time_stamp()", cpp)
+        @test occursin("new VerilatedContext", cpp)          # one context per model
         @test Meta.parse(jl) isa Expr
         @test occursin("set_huge!(model::VerilatedModel, val::Integer)", jl)
     end

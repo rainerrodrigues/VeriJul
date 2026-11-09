@@ -82,3 +82,31 @@ end
     stop_clock!(fsim); stop_clock!(csim)
     destroy!(filt); destroy!(cnt)
 end
+
+@testset "Reloading and duplicate models" begin
+    # Each model has its own context, so a second model of the same design can
+    # be created while the first is mid-simulation (and after it is destroyed,
+    # even where the OS keeps the library loaded).
+    args = (counter_srcs, "counter")
+    kw = (build_dir=joinpath(build_root, "counter"), include_dirs=counter_inc)
+    a = load_dut(args...; kw...)
+    asim = Simulator(a); start_clock!(asim); reset!(asim)
+    a.step = 1
+    @tick asim 3
+    stop_clock!(asim)
+    @test a.count == 3 && asim.time > 0
+
+    # Created while `a` is alive at a non-zero time
+    b = load_dut(args...; kw...)
+    bsim = Simulator(b); start_clock!(bsim); reset!(bsim)
+    b.step = 2
+    @tick bsim 2
+    stop_clock!(bsim)
+    @test b.count == 4
+    @test a.count == 3                              # independent state
+    destroy!(a); destroy!(b)
+
+    c = load_dut(args...; kw...)
+    @test c.count isa UInt8
+    destroy!(c)
+end
