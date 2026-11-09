@@ -1,49 +1,49 @@
-using VeriJul
+# Integration test: build filter.v with Verilator, then drive it from Julia.
+# Included from runtests.jl, so it runs inside a @testset at Main's top level.
 
-println("--- Starting VeriJul Build Process ---")
+project_root = dirname(@__DIR__)
+verilog_file = joinpath(project_root, "examples", "filter.v")
+build_dir = mktempdir()
 
-project_root = dirname(@__DIR__) 
-verilog_file = joinpath(project_root, "src", "filter.v")
+so_path, binding_path = VeriJul.Builder.build_dut(verilog_file, "filter"; build_dir=build_dir)
+@test isfile(so_path)
 
-# Building the library
-so_path, binding_path = VeriJul.Builder.build_dut(verilog_file, "filter")
-
-# Loading the bindings
 include(binding_path)
 using .AutoBindings
 
-# Instantiating the simulation
-dut = VeriJul.Interop.VerilatedModel(so_path, :top_create)
-sim = VeriJul.Core.Simulator(dut)
-AutoBindings.enable_trace!(sim.dut, joinpath(dirname(so_path), "waveform.vcd"))
+dut = VerilatedModel(so_path, :top_create)
+sim = Simulator(dut)
+vcd_path = joinpath(build_dir, "waveform.vcd")
+AutoBindings.enable_trace!(sim.dut, vcd_path)
 
-VeriJul.Core.start_clock!(sim)
+@test AutoBindings.get_out_data(sim.dut) == 0x00
 
-println("--- Simulation Initialized ---")
+start_clock!(sim)
+@test_throws ErrorException start_clock!(sim)   # double-start is rejected
 
-# START THE HARDWARE CLOCK
-VeriJul.Core.start_clock!(sim)
-
-# Running an asynchronous Testbench
-@sync begin
-    @async begin
-        println("[t=$(sim.time)] Initial out_data: ", AutoBindings.get_out_data(sim.dut))
-        
-        println("[t=$(sim.time)] Setting in_data to 0xFF...")
-        AutoBindings.set_in_data!(sim.dut, 0xFF)
-        
-        # Waiting for the next rising edge (the background clock task handles the actual toggling)
-        @tick sim 
-        
-        println("[t=$(sim.time)] out_data after cycle 1: ", AutoBindings.get_out_data(sim.dut))
-        
-        println("[t=$(sim.time)] Setting in_data to 0x42...")
-        AutoBindings.set_in_data!(sim.dut, 0x42)
-        
-        @tick sim 
-        
-        println("[t=$(sim.time)] out_data after cycle 2: ", AutoBindings.get_out_data(sim.dut))
+outputs = UInt8[]
+@sync @async begin
+    # Hold 0xFF long enough to fill the 4-tap pipeline plus the output register
+    AutoBindings.set_in_data!(sim.dut, 0xFF)
+    for _ in 1:6
+        @tick sim
+        push!(outputs, AutoBindings.get_out_data(sim.dut))
     end
+    @test outputs[end] == 0xFF
+    @test issorted(outputs)          # moving average ramps up monotonically
+    @test any(<(0xFF), outputs)      # ...and isn't instantly at full scale
+
+    # Drain back to zero
+    AutoBindings.set_in_data!(sim.dut, 0)
+    for _ in 1:6
+        @tick sim
+    end
+    @test AutoBindings.get_out_data(sim.dut) == 0x00
 end
 
-println("--- Test Complete ---")
+stop_clock!(sim)
+@test sim.clock_task === nothing
+@test sim.time > 0
+
+destroy!(dut)
+@test isfile(vcd_path) && filesize(vcd_path) > 0
