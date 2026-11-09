@@ -28,6 +28,7 @@ using VeriJul.Builder: HardwarePort, extract_ports, generate_bindings, verilator
         @test occursin("void set_word(Handle* h, uint16_t val)", cpp)
         @test occursin("uint64_t get_wide(Handle* h)", cpp)
         @test occursin("void top_destroy(Handle* h)", cpp)
+        @test occursin("double sc_time_stamp()", cpp)
         # Generated Julia must parse and mask narrow inputs
         @test Meta.parse(jl) isa Expr
         @test occursin("(val % UInt8) & 0x1", jl)
@@ -45,7 +46,7 @@ using VeriJul.Builder: HardwarePort, extract_ports, generate_bindings, verilator
         Aqua.test_all(VeriJul)
     end
 
-    if Sys.which("verilator") !== nothing && Sys.which(get(ENV, "CXX", "g++")) !== nothing
+    if Sys.which("verilator") !== nothing && Sys.which(get(ENV, "CXX", Sys.isapple() ? "c++" : "g++")) !== nothing
         @testset "Hardware integration (filter.v)" begin
             @test verilator_version() >= v"4.200"
             include("test_run.jl")

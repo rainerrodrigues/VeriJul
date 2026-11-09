@@ -85,6 +85,11 @@ function generate_bindings(ports::Vector{HardwarePort}, module_name::String)
     #include "verilated_vcd_c.h"
     #include "$V.h"
 
+    // Verilator's runtime calls sc_time_stamp() for \$finish/\$stop messages.
+    // It must be defined by the program; macOS refuses to link without it.
+    static double vj_time = 0;
+    double sc_time_stamp() { return vj_time; }
+
     // One handle per model instance so several models can trace independently
     struct Handle {
         $V* top;
@@ -105,6 +110,7 @@ function generate_bindings(ports::Vector{HardwarePort}, module_name::String)
         }
 
         void top_eval(Handle* h, uint64_t time) {
+            vj_time = static_cast<double>(time);
             h->top->eval();
             if (h->tfp) h->tfp->dump(time);
         }
