@@ -5,7 +5,7 @@ CurrentModule = VeriJul
 # Guide
 
 This walkthrough drives the 4-tap moving-average filter from
-[`examples/filter.v`](https://github.com/rainerrodrigues/VeriJul/blob/main/examples/filter.v).
+[`examples/filter.v`](https://github.com/rainerrodrigues/VeriJul.jl/blob/main/examples/filter.v).
 
 ## 1. Build the design
 

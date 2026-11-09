@@ -13,4 +13,4 @@ makedocs(
     ],
 )
 
-deploydocs(repo = "github.com/rainerrodrigues/VeriJul.git", devbranch = "main")
+deploydocs(repo = "github.com/rainerrodrigues/VeriJul.jl.git", devbranch = "main")

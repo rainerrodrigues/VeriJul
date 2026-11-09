@@ -1,8 +1,8 @@
 # VeriJul.jl
 
-[![CI](https://github.com/rainerrodrigues/VeriJul/actions/workflows/ci.yml/badge.svg)](https://github.com/rainerrodrigues/VeriJul/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://rainerrodrigues.github.io/VeriJul/dev/)
-[![codecov](https://codecov.io/gh/rainerrodrigues/VeriJul/graph/badge.svg)](https://codecov.io/gh/rainerrodrigues/VeriJul)
+[![CI](https://github.com/rainerrodrigues/VeriJul.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/rainerrodrigues/VeriJul.jl/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://rainerrodrigues.github.io/VeriJul.jl/dev/)
+[![codecov](https://codecov.io/gh/rainerrodrigues/VeriJul.jl/graph/badge.svg)](https://codecov.io/gh/rainerrodrigues/VeriJul.jl)
 [![Aqua QA](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
 Write hardware testbenches in Julia. VeriJul compiles a Verilog design with
@@ -58,7 +58,7 @@ destroy!(dut)
 ```
 
 The full script is in [`examples/filter_demo.jl`](examples/filter_demo.jl).
-See the [documentation](https://rainerrodrigues.github.io/VeriJul/dev/) for a
+See the [documentation](https://rainerrodrigues.github.io/VeriJul.jl/dev/) for a
 step-by-step guide and the API reference.
 
 ## Running the tests
