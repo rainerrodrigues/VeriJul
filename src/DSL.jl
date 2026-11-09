@@ -1,18 +1,30 @@
 module DSL
 
-using ..SimCore: Simulator
+using ..SimCore: Simulator, tick
 export @tick, @testbench
 
 """
     @tick sim
+    @tick sim n
+    @tick sim n clock=:clk_b edge=:falling timeout=1.0
 
-Pauses the current execution until the next rising edge of the simulator's clock.
+Waits for the next rising edge of the main clock, or `n` edges. Keywords are
+passed to [`tick`](@ref VeriJul.SimCore.tick): `clock`, `edge` and `timeout`
+(wall-clock seconds).
 """
-macro tick(sim)
-    return quote
-        # 'wait' pauses the current Task until the simulator calls 'notify'
-        wait($(esc(sim)).rising_edge)
+macro tick(sim, args...)
+    pos = Any[]
+    kws = Any[]
+    for a in args
+        if a isa Expr && a.head === :(=)
+            push!(kws, Expr(:kw, a.args[1], esc(a.args[2])))
+        else
+            isempty(kws) || throw(ArgumentError("@tick: the cycle count must come before keywords"))
+            push!(pos, esc(a))
+        end
     end
+    length(pos) <= 1 || throw(ArgumentError("@tick takes at most one cycle count"))
+    return Expr(:call, tick, Expr(:parameters, kws...), esc(sim), pos...)
 end
 
 """
@@ -23,7 +35,7 @@ as an asynchronous task, so it can wait on clock edges with [`@tick`](@ref VeriJ
 
 ```julia
 @testbench function drive(sim)
-    AutoBindings.set_in_data!(sim.dut, 0xFF)
+    sim.dut.in_data = 0xFF
     @tick sim
 end
 

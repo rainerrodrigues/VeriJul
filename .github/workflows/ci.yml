@@ -57,4 +57,7 @@ jobs:
       - name: Install Verilator
         run: sudo apt-get update && sudo apt-get install -y verilator
       - name: Lint Verilog sources
-        run: find examples test \( -name "*.v" -o -name "*.sv" \) -print0 | xargs -0 -r -n1 verilator --lint-only -Wno-WIDTHEXPAND
+        run: |
+          verilator --lint-only -Wno-WIDTHEXPAND examples/filter.v
+          verilator --lint-only -Iexamples/counter/include \
+            examples/counter/counter.v examples/counter/inverter.v --top-module counter

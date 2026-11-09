@@ -4,21 +4,14 @@ CurrentModule = VeriJul
 
 # API
 
-## Building
+## Loading designs
 
 ```@docs
-build_dut
-VeriJul.Builder.verilator_version
-VeriJul.Builder.HardwarePort
-VeriJul.Builder.extract_ports
-VeriJul.Builder.generate_bindings
-```
-
-## Models
-
-```@docs
-VerilatedModel
-eval_step!
+load_dut
+DUT
+ports
+settle!
+enable_trace!
 destroy!
 ```
 
@@ -26,8 +19,30 @@ destroy!
 
 ```@docs
 Simulator
+add_clock!
 start_clock!
 stop_clock!
+tick
 @tick
+reset!
 @testbench
+ClockStopped
+TickTimeout
+```
+
+## Building
+
+```@docs
+build_dut
+VeriJul.Builder.verilator_version
+HardwarePort
+VeriJul.Builder.extract_ports
+VeriJul.Builder.generate_bindings
+```
+
+## Low-level model access
+
+```@docs
+VerilatedModel
+eval_step!
 ```

@@ -1,6 +1,6 @@
 name = "VeriJul"
 uuid = "a90675a2-a9ae-420a-b66a-bece10430f60"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Rainer Rodrigues"]
 
 [deps]
