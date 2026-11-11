@@ -36,7 +36,7 @@ dut.out_data                              # 0xff
 ## Requirements
 
 - Julia 1.10 or newer
-- Verilator 4.200 or newer on your `PATH`
+- Verilator 4.200 or newer on your `PATH` (or set `VERIJUL_VERILATOR` to its path)
 - A C++17 compiler (`g++` or `clang++`; set `CXX` to pick one)
 
 VeriJul is tested on Linux and macOS. Windows is not supported yet.
@@ -66,4 +66,4 @@ Pkg.add("VeriJul")
 4. [Ports and wide signals](@ref) explains port types, truncation and ports
    wider than 64 bits.
 
-Upgrading from VeriJul 0.1? See [Migrating from 0.1](@ref).
+To keep building and loading as separate steps, see [Lower-level API](@ref).

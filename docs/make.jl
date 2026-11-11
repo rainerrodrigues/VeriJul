@@ -16,7 +16,7 @@ makedocs(
             "tutorials/build_and_clocks.md",
             "tutorials/ports.md",
         ],
-        "Migrating from 0.1" => "guides/migrating.md",
+        "Lower-level API" => "guides/low_level.md",
         "API" => "api.md",
     ],
 )

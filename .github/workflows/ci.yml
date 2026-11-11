@@ -48,7 +48,8 @@ jobs:
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
+          # Fail loudly on main (where the secret is available); forks can't see it
+          fail_ci_if_error: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
   verilog-lint:
     runs-on: ubuntu-latest

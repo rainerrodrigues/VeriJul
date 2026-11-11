@@ -1,8 +1,10 @@
 module Builder
 
 using Libdl
+using Scratch: get_scratch!
 
-export build_dut, HardwarePort, extract_ports, generate_bindings, verilator_version
+export build_dut, HardwarePort, extract_ports, generate_bindings, verilator_version,
+       verilator_cmd, clear_build_cache
 
 """
     HardwarePort(name, direction, width)
@@ -23,15 +25,34 @@ const MIN_VERILATOR = v"4.200"
 const WRAPPER_VERSION = 3
 
 """
+    verilator_cmd() -> Cmd
+
+The Verilator command VeriJul runs. Set the `VERIJUL_VERILATOR` environment
+variable to the path of a `verilator` executable to use that one; otherwise
+`verilator` is looked up on `PATH`. Throws an error explaining how to
+install Verilator if none is found.
+"""
+function verilator_cmd()
+    override = get(ENV, "VERIJUL_VERILATOR", "")
+    if !isempty(override)
+        (isfile(override) || Sys.which(override) !== nothing) ||
+            error("VERIJUL_VERILATOR is set to `$override`, but no such executable exists")
+        return `$override`
+    end
+    Sys.which("verilator") === nothing &&
+        error("Verilator was not found on PATH. Install it (e.g. `apt install verilator` or ",
+              "`brew install verilator`), or set VERIJUL_VERILATOR to the path of a `verilator` executable.")
+    return `verilator`
+end
+
+"""
     verilator_version() -> VersionNumber
 
-Returns the version of the `verilator` executable on `PATH`, or throws an
-error explaining how to install it.
+Returns the version of the Verilator that [`verilator_cmd`](@ref VeriJul.Builder.verilator_cmd)
+finds, or throws an error explaining how to install it.
 """
 function verilator_version()
-    Sys.which("verilator") === nothing &&
-        error("`verilator` was not found on PATH. Install it (e.g. `apt install verilator` or `brew install verilator`).")
-    out = read(`verilator --version`, String)
+    out = read(`$(verilator_cmd()) --version`, String)
     m = match(r"Verilator\s+(\d+)\.(\d+)", out)
     m === nothing && error("Could not parse Verilator version from: $(repr(out))")
     return VersionNumber(parse(Int, m[1]), parse(Int, m[2]))
@@ -171,6 +192,45 @@ function generate_bindings(ports::Vector{HardwarePort}, module_name::String)
     return cpp_code, jl_code
 end
 
+# The C++ compiler command, e.g. `g++` or `ccache g++` (from the CXX variable).
+function cxx_cmd()
+    cxx = get(ENV, "CXX", Sys.isapple() ? "c++" : "g++")
+    words = split(cxx)
+    (isempty(words) || Sys.which(words[1]) === nothing) &&
+        error("C++ compiler `$cxx` not found. Verilator turns the design into C++, so a C++17 ",
+              "compiler is needed: install g++ or clang, or set CXX to the compiler's path.")
+    return Cmd(String.(words))
+end
+
+# Marks a directory as created by VeriJul, so it may be emptied on rebuild.
+const BUILD_MARKER = ".verijul-build"
+
+# Make `dir` an empty build directory, without ever deleting files VeriJul
+# didn't create: a non-empty directory is only emptied if it has the marker.
+function prepare_build_dir(dir::AbstractString)
+    if isdir(dir) && !isempty(readdir(dir))
+        isfile(joinpath(dir, BUILD_MARKER)) ||
+            error("Refusing to use `$dir` as a build directory: it is not empty and was not ",
+                  "created by VeriJul. Pass an empty or new directory as `build_dir`, or omit ",
+                  "`build_dir` to use VeriJul's build cache.")
+        rm(dir; recursive=true)
+    end
+    mkpath(dir)
+    write(joinpath(dir, BUILD_MARKER),
+          "Created by VeriJul.jl. This directory may be deleted and rebuilt at any time.\n")
+    return dir
+end
+
+build_cache() = get_scratch!(Base.moduleroot(@__MODULE__), "builds")
+
+"""
+    clear_build_cache()
+
+Deletes all cached builds in VeriJul's default build location (used when
+`build_dir` is not given). Designs that are still loaded keep working.
+"""
+clear_build_cache() = (rm(build_cache(); recursive=true, force=true); nothing)
+
 # Everything that affects the build output, so unchanged designs are not rebuilt.
 function build_key(sources, top, include_dirs, defines, parameters, verilator_args, vver, cxx)
     h = hash((WRAPPER_VERSION, string(vver), top, cxx, verilator_args))
@@ -197,7 +257,11 @@ Most code should call [`load_dut`](@ref VeriJul.Device.load_dut), which builds
 and loads in one step and takes the same keywords.
 
 # Keywords
-- `build_dir="./build"`: where build files go.
+- `build_dir`: where build files go. By default each design and set of options
+  gets its own folder in VeriJul's build cache (a Scratch.jl space, removed
+  with [`clear_build_cache`](@ref VeriJul.Builder.clear_build_cache) or when
+  VeriJul is uninstalled). A directory you pass must be empty, new, or one
+  VeriJul created earlier; VeriJul never deletes files it didn't create.
 - `include_dirs=String[]`: directories searched by `` `include `` (`-I`).
 - `defines=Dict()`: preprocessor macros, e.g. `Dict("DEPTH" => 16, "FAST" => nothing)`
   (`+define+`).
@@ -210,14 +274,16 @@ and loads in one step and takes the same keywords.
 
 Builds are cached: if the sources, files in `include_dirs`, options,
 Verilator version and compiler are unchanged, the existing library is reused.
+To rebuild, VeriJul empties the build directory first.
 Files pulled in by `` `include `` from outside `include_dirs` are not tracked;
 pass `force=true` after changing them.
 
 Set the `CXX` environment variable to choose the C++ compiler (default `g++`,
-or `c++` on macOS).
+or `c++` on macOS; `CXX="ccache g++"` also works). Set `VERIJUL_VERILATOR` to
+choose the Verilator executable (see [`verilator_cmd`](@ref VeriJul.Builder.verilator_cmd)).
 """
 function build_dut(sources::Union{AbstractString,AbstractVector{<:AbstractString}}, top_module::AbstractString;
-                   build_dir::AbstractString="./build",
+                   build_dir::Union{AbstractString,Nothing}=nothing,
                    include_dirs::AbstractVector{<:AbstractString}=String[],
                    defines::AbstractDict=Dict{String,Any}(),
                    parameters::AbstractDict=Dict{String,Any}(),
@@ -234,11 +300,12 @@ function build_dut(sources::Union{AbstractString,AbstractVector{<:AbstractString
         isdir(d) || error("Include directory not found: $d")
     end
     vver = check_verilator()
-    cxx = get(ENV, "CXX", Sys.isapple() ? "c++" : "g++")
+    verilator = verilator_cmd()
+    cxx = cxx_cmd()
     args = String.(verilator_args)
 
-    build_dir = abspath(build_dir)
-    key = build_key(srcs, top_module, incs, defines, parameters, args, vver, cxx)
+    key = build_key(srcs, top_module, incs, defines, parameters, args, vver, string(cxx))
+    build_dir = build_dir === nothing ? joinpath(build_cache(), "$(top_module)_$(key)") : abspath(build_dir)
     # The key is part of the file name: dlopen returns an already-loaded library
     # for a path it has seen, so a rebuilt library needs a new path.
     output_lib = joinpath(build_dir, "libV$(top_module)_$(key[1:12]).$(Libdl.dlext)")
@@ -249,8 +316,7 @@ function build_dut(sources::Union{AbstractString,AbstractVector{<:AbstractString
         return output_lib, jl_binding_path
     end
 
-    rm(build_dir, force=true, recursive=true)
-    mkpath(build_dir)
+    prepare_build_dir(build_dir)
 
     # Show tool output only when asked, but always surface it if a step fails
     function sh(cmd)
@@ -270,7 +336,7 @@ function build_dut(sources::Union{AbstractString,AbstractVector{<:AbstractString
     append!(flags, args)
 
     verbose && @info "Running Verilator $vver"
-    sh(`verilator -Wno-fatal --trace --cc $srcs --top-module $top_module -Mdir $build_dir $flags`)
+    sh(`$verilator -Wno-fatal --trace --cc $srcs --top-module $top_module -Mdir $build_dir $flags`)
 
     verbose && @info "Generating bindings"
     ports = extract_ports(joinpath(build_dir, "V$(top_module).h"))
@@ -279,7 +345,7 @@ function build_dut(sources::Union{AbstractString,AbstractVector{<:AbstractString
     wrapper_path = joinpath(build_dir, "wrapper.cpp")
     write(wrapper_path, cpp_code)
 
-    verilator_root = strip(read(`verilator --getenv VERILATOR_ROOT`, String))
+    verilator_root = strip(read(`$verilator --getenv VERILATOR_ROOT`, String))
     inc_dir = joinpath(verilator_root, "include")
 
     generated_cpps = filter(f -> startswith(f, "V$(top_module)") && endswith(f, ".cpp"), readdir(build_dir))

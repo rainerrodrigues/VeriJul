@@ -1,13 +1,13 @@
 using Test
 using Aqua
 using VeriJul
-using VeriJul.Builder: extract_ports, generate_bindings, verilator_version
+using VeriJul.Builder: extract_ports, generate_bindings, verilator_version, verilator_cmd,
+                       prepare_build_dir, cxx_cmd, build_cache, clear_build_cache, BUILD_MARKER
 using VeriJul.Interop: words_to_int, int_to_words
 
 include("mock.jl")
 
-have_toolchain() = Sys.which("verilator") !== nothing &&
-                   Sys.which(get(ENV, "CXX", Sys.isapple() ? "c++" : "g++")) !== nothing
+have_toolchain() = (try verilator_cmd(); cxx_cmd(); true catch; false end)
 
 @testset "VeriJul.jl" begin
     @testset "Port extraction" begin
@@ -24,6 +24,50 @@ have_toolchain() = Sys.which("verilator") !== nothing &&
         empty_header = tempname()
         write(empty_header, "class Vnothing {};")
         @test_throws ErrorException extract_ports(empty_header)
+    end
+
+    @testset "Build directories never delete user files" begin
+        root = mktempdir()
+        new = joinpath(root, "new", "nested")
+        prepare_build_dir(new)
+        @test isfile(joinpath(new, BUILD_MARKER))
+
+        empty_dir = mkpath(joinpath(root, "empty"))
+        prepare_build_dir(empty_dir)
+        @test isfile(joinpath(empty_dir, BUILD_MARKER))
+
+        users = mkpath(joinpath(root, "users"))
+        write(joinpath(users, "notes.txt"), "keep me")
+        err = try prepare_build_dir(users); nothing catch e; e end
+        @test err isa ErrorException && occursin("Refusing", err.msg)
+        @test read(joinpath(users, "notes.txt"), String) == "keep me"
+
+        # A directory VeriJul created is emptied and reused
+        write(joinpath(new, "old_build.o"), "stale")
+        prepare_build_dir(new)
+        @test readdir(new) == [BUILD_MARKER]
+
+        @test isdir(build_cache())
+        @test startswith(build_cache(), first(DEPOT_PATH))
+    end
+
+    @testset "Toolchain lookup" begin
+        withenv("VERIJUL_VERILATOR" => "/no/such/verilator") do
+            err = try verilator_cmd(); nothing catch e; e end
+            @test err isa ErrorException && occursin("VERIJUL_VERILATOR", err.msg)
+        end
+        withenv("VERIJUL_VERILATOR" => nothing, "PATH" => "") do
+            err = try verilator_cmd(); nothing catch e; e end
+            @test err isa ErrorException && occursin("apt install verilator", err.msg)
+        end
+        withenv("CXX" => "no-such-compiler-xyz") do
+            err = try cxx_cmd(); nothing catch e; e end
+            @test err isa ErrorException && occursin("C++17", err.msg)
+        end
+        sh = Sys.which("sh")
+        withenv("CXX" => "$sh -c") do
+            @test cxx_cmd() == `$sh -c`        # multi-word CXX, e.g. "ccache g++"
+        end
     end
 
     @testset "Binding generation" begin
@@ -104,7 +148,7 @@ have_toolchain() = Sys.which("verilator") !== nothing &&
         @test dut.slow_count == before + 3
 
         @tick sim edge=:falling
-        @test sim.clk_val == 0x00                                # 0.1 compatibility field
+        @test sim.clk_val == 0x00                                # lower-level API field
         t0 = sim.time
         @tick sim
         @test sim.time > t0 && sim.time % 10 == 0                # rising edges at multiples of 10
@@ -150,7 +194,7 @@ have_toolchain() = Sys.which("verilator") !== nothing &&
     end
 
     if have_toolchain()
-        @testset "Hardware: VeriJul 0.1 API (filter.v)" begin
+        @testset "Hardware: lower-level API (filter.v)" begin
             @test verilator_version() >= v"4.200"
             include("test_run.jl")
         end

@@ -71,6 +71,19 @@ all unchanged. Pass `force=true` to rebuild anyway, for example after editing
 a file that is included from outside `include_dirs`, and `verbose=true` to
 see Verilator's output.
 
+### Where builds go
+
+Without `build_dir`, each design and set of options gets its own folder in
+VeriJul's build cache (a [Scratch.jl](https://github.com/JuliaPackaging/Scratch.jl)
+space in your Julia depot), so nothing is written to the current directory
+and cached builds survive between sessions. [`clear_build_cache`](@ref VeriJul.Builder.clear_build_cache)
+deletes them, and they are removed when VeriJul is uninstalled.
+
+If you pass `build_dir`, it must be new, empty, or a directory VeriJul
+created before (VeriJul marks those with a `.verijul-build` file). VeriJul
+refuses to use a non-empty directory it didn't create, so it never deletes
+your files.
+
 ```@example clocks
 destroy!(wide) # hide
 nothing # hide

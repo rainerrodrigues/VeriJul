@@ -110,3 +110,29 @@ end
     @test c.count isa UInt8
     destroy!(c)
 end
+
+@testset "Default build location" begin
+    # Without build_dir nothing is written to the working directory
+    work = mktempdir()
+    dut = cd(work) do
+        load_dut(counter_srcs, "counter"; include_dirs=counter_inc)
+    end
+    @test isempty(readdir(work))
+    lib = getfield(dut, :lib_path)
+    @test startswith(lib, VeriJul.Builder.build_cache())
+    @test isfile(joinpath(dirname(lib), VeriJul.Builder.BUILD_MARKER))
+
+    # Cached: the same design loads from the same library
+    again = load_dut(counter_srcs, "counter"; include_dirs=counter_inc)
+    @test getfield(again, :lib_path) == lib
+    # Different options get their own folder
+    other = load_dut(counter_srcs, "counter"; include_dirs=counter_inc, parameters=Dict("WIDTH" => 4))
+    @test dirname(getfield(other, :lib_path)) != dirname(lib)
+    foreach(destroy!, (dut, again, other))
+
+    # A user's non-empty directory is refused, and its files survive
+    users = mktempdir()
+    write(joinpath(users, "notes.txt"), "keep me")
+    @test_throws ErrorException build_dut(counter_srcs, "counter"; include_dirs=counter_inc, build_dir=users)
+    @test readdir(users) == ["notes.txt"]
+end

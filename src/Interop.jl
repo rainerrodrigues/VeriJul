@@ -26,7 +26,7 @@ mutable struct VerilatedModel
 
         ptr = ccall(Libdl.dlsym(lib_handle, create_sym), Ptr{Cvoid}, ())
         eval_ptr = Libdl.dlsym(lib_handle, :top_eval)
-        # Libraries built by VeriJul 0.1 lack top_settle; fall back to top_eval
+        # Libraries from earlier development builds lack top_settle; fall back to top_eval
         settle_ptr = something(Libdl.dlsym(lib_handle, :top_settle; throw_error=false), C_NULL)
 
         model = new(ptr, lib_handle, eval_ptr, settle_ptr)

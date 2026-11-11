@@ -62,11 +62,11 @@ dut = load_dut("filter.v", "filter")
 dut.in_data = 0xFF
 ```
 
-`build_dir` defaults to `./build/<top_module>`, so designs loaded in the same
-directory don't overwrite each other.
+By default the build goes into VeriJul's build cache, one folder per design
+and set of options, so nothing is written to the current directory.
 """
 function load_dut(sources, top_module::AbstractString;
-                  build_dir::AbstractString=joinpath("build", top_module), kwargs...)
+                  build_dir::Union{AbstractString,Nothing}=nothing, kwargs...)
     lib, _ = build_dut(sources, top_module; build_dir=build_dir, kwargs...)
     header = joinpath(dirname(lib), "V$(top_module).h")
     return DUT(lib, top_module, extract_ports(header))

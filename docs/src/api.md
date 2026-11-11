@@ -34,6 +34,8 @@ TickTimeout
 
 ```@docs
 build_dut
+VeriJul.Builder.clear_build_cache
+VeriJul.Builder.verilator_cmd
 VeriJul.Builder.verilator_version
 HardwarePort
 VeriJul.Builder.extract_ports

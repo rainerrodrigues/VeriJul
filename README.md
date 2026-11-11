@@ -13,7 +13,7 @@ VCD waveform output.
 ## Requirements
 
 - Julia 1.10 or newer
-- Verilator 4.200 or newer
+- Verilator 4.200 or newer on `PATH` (or set `VERIJUL_VERILATOR` to its path)
 - A C++17 compiler (`g++` or `clang++`; set `CXX` to choose)
 
 Tested on Linux and macOS. Windows is not supported yet.
@@ -57,6 +57,9 @@ Also included:
 - several clocks with their own periods (`add_clock!`), `@tick sim n clock=:clk_b`
 - `reset!`, and timeouts so stuck testbenches fail instead of hanging
 - ports of any width, with wide ports as `BigInt`
+
+Builds are cached in VeriJul's own scratch space, so nothing is written to
+your working directory unless you pass `build_dir`.
 
 The [documentation](https://rainerrodrigues.github.io/VeriJul.jl/dev/) has
 tutorials for each of these and the API reference. Runnable scripts are in

@@ -88,7 +88,7 @@ function Simulator(dut::Union{DUT,VerilatedModel}; clock::Symbol=:clk, half_peri
     return sim
 end
 
-# Keep fields from VeriJul 0.1 working: rising_edge, falling_edge, clk_val
+# Main-clock fields for the lower-level API: rising_edge, falling_edge, clk_val
 function Base.getproperty(sim::Simulator, s::Symbol)
     s === :rising_edge  && return getfield(sim, :clocks)[1].rising
     s === :falling_edge && return getfield(sim, :clocks)[1].falling
@@ -133,7 +133,7 @@ Starts the clocks in a background task. On each step it toggles the clocks
 due at the earliest time, evaluates the design (writing a waveform sample if
 tracing is on) and wakes tasks waiting in [`tick`](@ref VeriJul.SimCore.tick).
 
-Passing `half_period` changes the main clock's half period (VeriJul 0.1 style).
+Passing `half_period` changes the main clock's half period.
 Throws if the clock is already running.
 """
 function start_clock!(sim::Simulator, half_period::Union{Integer,Nothing}=nothing)

@@ -89,5 +89,4 @@ nothing # hide
 
 [`build_dut`](@ref) returns the library path and a generated `bindings.jl`
 with one function per port (`set_<port>!`, `get_<port>`) operating on a
-[`VerilatedModel`](@ref). That is the VeriJul 0.1 interface and still works;
-see [Migrating from 0.1](@ref).
+[`VerilatedModel`](@ref). See [Lower-level API](@ref).
