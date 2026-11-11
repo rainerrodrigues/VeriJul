@@ -2,7 +2,8 @@ using Test
 using Aqua
 using VeriJul
 using VeriJul.Builder: extract_ports, generate_bindings, verilator_version, verilator_cmd,
-                       prepare_build_dir, cxx_cmd, build_cache, clear_build_cache, BUILD_MARKER
+                       prepare_build_dir, claim_build_dir, clear_build_dir, cached_build,
+                       cxx_cmd, build_cache, clear_build_cache, BUILD_MARKER, BUILD_LOCK, BUILD_RECORD
 using VeriJul.Interop: words_to_int, int_to_words
 
 include("mock.jl")
@@ -46,6 +47,21 @@ have_toolchain() = (try verilator_cmd(); cxx_cmd(); true catch; false end)
         write(joinpath(new, "old_build.o"), "stale")
         prepare_build_dir(new)
         @test readdir(new) == [BUILD_MARKER]
+
+        # Clearing keeps the marker and the lock file
+        write(joinpath(new, BUILD_LOCK), "")
+        write(joinpath(new, "lib.so"), "x")
+        clear_build_dir(new)
+        @test sort(readdir(new)) == sort([BUILD_MARKER, BUILD_LOCK])
+
+        # Only a complete build for the same key counts as cached
+        @test cached_build(new, "abc") === nothing
+        write(joinpath(new, "libVx_1.so"), "x"); write(joinpath(new, "bindings.jl"), "")
+        write(joinpath(new, BUILD_RECORD), "abc\nlibVx_1.so\n")
+        @test cached_build(new, "abc") == (joinpath(new, "libVx_1.so"), joinpath(new, "bindings.jl"))
+        @test cached_build(new, "other") === nothing
+        rm(joinpath(new, "libVx_1.so"))
+        @test cached_build(new, "abc") === nothing
 
         @test isdir(build_cache())
         @test startswith(build_cache(), first(DEPOT_PATH))
@@ -173,6 +189,41 @@ have_toolchain() = (try verilator_cmd(); cxx_cmd(); true catch; false end)
         @tick sim 2
         stop_clock!(sim)
         @test sim.clock_task === nothing
+    end
+
+    @testset "Clock and reset inputs must be 1 bit (mock design)" begin
+        dut = MockDesign.make_dut()
+        sim = Simulator(dut)
+        err = try add_clock!(sim, :wide_in); nothing catch e; e end
+        @test err isa ErrorException && occursin("100 bits wide", err.msg)
+        @test_throws ErrorException add_clock!(sim, :step)          # 8 bits
+        @test_throws ErrorException Simulator(dut; clock=:step)
+        start_clock!(sim)
+        @test_throws ErrorException reset!(sim, :wide_in)
+        @test_throws ErrorException reset!(sim, :step)
+        stop_clock!(sim)
+    end
+
+    @testset "Adding a clock later never rewinds time (mock design)" begin
+        dut = MockDesign.make_dut()
+        sim = Simulator(dut)
+        start_clock!(sim)
+        @tick sim 5
+        stop_clock!(sim)
+        t_stop = sim.time
+        @test t_stop > 0
+        @test_throws ArgumentError add_clock!(sim, :clk_slow; phase=-1)
+        add_clock!(sim, :clk_slow; half_period=7)
+        start_clock!(sim)
+        times = Int[]
+        for _ in 1:6
+            @tick sim edge=:rising clock=:clk_slow
+            push!(times, sim.time)
+        end
+        stop_clock!(sim)
+        @test first(times) > t_stop
+        @test issorted(times) && allunique(times)
+        @test all(diff(times) .== 14)                # rising edges one period apart
     end
 
     @testset "@testbench with a DUT (mock design)" begin

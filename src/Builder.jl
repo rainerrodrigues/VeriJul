@@ -2,6 +2,7 @@ module Builder
 
 using Libdl
 using Scratch: get_scratch!
+using FileWatching.Pidfile: mkpidlock
 
 export build_dut, HardwarePort, extract_ports, generate_bindings, verilator_version,
        verilator_cmd, clear_build_cache
@@ -204,21 +205,46 @@ end
 
 # Marks a directory as created by VeriJul, so it may be emptied on rebuild.
 const BUILD_MARKER = ".verijul-build"
+# Lock file held for the whole build, so parallel Julia processes don't clash.
+const BUILD_LOCK = ".verijul-lock"
+# Written last by a successful build: the build key and the library's file name.
+const BUILD_RECORD = "build-record.txt"
 
-# Make `dir` an empty build directory, without ever deleting files VeriJul
-# didn't create: a non-empty directory is only emptied if it has the marker.
-function prepare_build_dir(dir::AbstractString)
+# Make sure `dir` exists and is VeriJul's, without ever deleting files VeriJul
+# didn't create: a non-empty directory must already have the marker.
+function claim_build_dir(dir::AbstractString)
     if isdir(dir) && !isempty(readdir(dir))
         isfile(joinpath(dir, BUILD_MARKER)) ||
             error("Refusing to use `$dir` as a build directory: it is not empty and was not ",
                   "created by VeriJul. Pass an empty or new directory as `build_dir`, or omit ",
                   "`build_dir` to use VeriJul's build cache.")
-        rm(dir; recursive=true)
     end
     mkpath(dir)
-    write(joinpath(dir, BUILD_MARKER),
-          "Created by VeriJul.jl. This directory may be deleted and rebuilt at any time.\n")
+    marker = joinpath(dir, BUILD_MARKER)
+    isfile(marker) ||
+        write(marker, "Created by VeriJul.jl. This directory may be deleted and rebuilt at any time.\n")
     return dir
+end
+
+# Delete everything VeriJul put in a claimed directory, except the marker and lock.
+function clear_build_dir(dir::AbstractString)
+    for f in readdir(dir)
+        f in (BUILD_MARKER, BUILD_LOCK) && continue
+        rm(joinpath(dir, f); recursive=true, force=true)
+    end
+    return dir
+end
+
+prepare_build_dir(dir::AbstractString) = clear_build_dir(claim_build_dir(dir))
+
+# A finished build for `key` in `dir`, or nothing.
+function cached_build(dir::AbstractString, key::AbstractString)
+    record = joinpath(dir, BUILD_RECORD)
+    isfile(record) || return nothing
+    lines = readlines(record)
+    (length(lines) >= 2 && lines[1] == key) || return nothing
+    lib, bindings = joinpath(dir, lines[2]), joinpath(dir, "bindings.jl")
+    return isfile(lib) && isfile(bindings) ? (lib, bindings) : nothing
 end
 
 build_cache() = get_scratch!(Base.moduleroot(@__MODULE__), "builds")
@@ -306,17 +332,31 @@ function build_dut(sources::Union{AbstractString,AbstractVector{<:AbstractString
 
     key = build_key(srcs, top_module, incs, defines, parameters, args, vver, string(cxx))
     build_dir = build_dir === nothing ? joinpath(build_cache(), "$(top_module)_$(key)") : abspath(build_dir)
-    # The key is part of the file name: dlopen returns an already-loaded library
-    # for a path it has seen, so a rebuilt library needs a new path.
-    output_lib = joinpath(build_dir, "libV$(top_module)_$(key[1:12]).$(Libdl.dlext)")
-    jl_binding_path = joinpath(build_dir, "bindings.jl")
 
-    if !force && isfile(output_lib) && isfile(jl_binding_path)
-        verbose && @info "Design unchanged, reusing $output_lib"
-        return output_lib, jl_binding_path
+    claim_build_dir(build_dir)
+    # Hold a lock for the whole check-and-build, so another Julia process
+    # building the same design waits and then reuses the result.
+    return mkpidlock(joinpath(build_dir, BUILD_LOCK); stale_age=600) do
+        if !force
+            cached = cached_build(build_dir, key)
+            if cached !== nothing
+                verbose && @info "Design unchanged, reusing $(cached[1])"
+                return cached
+            end
+        end
+        clear_build_dir(build_dir)
+        compile_design(build_dir, key, srcs, top_module, incs, defines, parameters, args,
+                       verilator, cxx, vver, verbose)
     end
+end
 
-    prepare_build_dir(build_dir)
+function compile_design(build_dir, key, srcs, top_module, incs, defines, parameters, args,
+                        verilator, cxx, vver, verbose)
+    # Every build gets a new library name: dlopen returns an already-loaded
+    # library for a path it has seen, so reusing a path could run old code.
+    lib_name = "libV$(top_module)_$(key[1:12])_$(string(time_ns(), base=36)).$(Libdl.dlext)"
+    output_lib = joinpath(build_dir, lib_name)
+    jl_binding_path = joinpath(build_dir, "bindings.jl")
 
     # Show tool output only when asked, but always surface it if a step fails
     function sh(cmd)
@@ -359,8 +399,9 @@ function build_dut(sources::Union{AbstractString,AbstractVector{<:AbstractString
     verbose && @info "Compiling shared library with $cxx"
     sh(`$cxx -std=c++17 -O2 -fPIC -shared -pthread -I$inc_dir -I$(joinpath(inc_dir, "vltstd")) -I$build_dir $cpp_files -o $output_lib`)
 
-    # Written last: its presence (with the library) marks a complete build
     write(jl_binding_path, jl_code)
+    # Written last: marks the build as complete and usable
+    write(joinpath(build_dir, BUILD_RECORD), key, "\n", lib_name, "\n")
 
     verbose && @info "Build complete" output_lib
     return output_lib, jl_binding_path

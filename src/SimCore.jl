@@ -62,17 +62,22 @@ mutable struct Simulator
     clocks::Vector{Clock}
     clock_task::Union{Task,Nothing}
     running::Bool
+    started::Bool   # true once the clocks have evaluated the design at least once
 end
 
 model_of(m::VerilatedModel) = m
 model_of(d::DUT) = Device.model(d)
 
 # Setter for a 1-bit control input (clock or reset). DUTs already hold the
-# pointers; bare models are looked up in the library.
+# pointers; bare models are looked up in the library. The setter is called
+# with a UInt8, so anything but a 1-bit input would get the wrong argument
+# type (wide ports even expect a pointer).
 function input_setter(dut::DUT, ::VerilatedModel, name::Symbol, what::AbstractString)
     h = get(getfield(dut, :handles), name, nothing)
     (h === nothing || h.port.direction != :in) &&
         error("The design has no input port named `$name` to use as $what")
+    h.port.width == 1 ||
+        error("Port `$name` is $(h.port.width) bits wide; $what must be a 1-bit input")
     return h.set_ptr
 end
 
@@ -83,7 +88,7 @@ function input_setter(::VerilatedModel, model::VerilatedModel, name::Symbol, wha
 end
 
 function Simulator(dut::Union{DUT,VerilatedModel}; clock::Symbol=:clk, half_period::Integer=5)
-    sim = Simulator(dut, model_of(dut), 0, Clock[], nothing, false)
+    sim = Simulator(dut, model_of(dut), 0, Clock[], nothing, false, false)
     add_clock!(sim, clock; half_period=half_period)
     return sim
 end
@@ -99,16 +104,24 @@ end
 """
     add_clock!(sim, name; half_period=5, phase=0)
 
-Adds another clock input. It toggles every `half_period` time units, starting
-at time `phase`. All clocks run on the same timeline, so their edges
-interleave correctly. Wait for its edges with `tick(sim; clock=name)`.
+Adds another 1-bit clock input. It toggles every `half_period` time units.
+All clocks run on the same timeline, so their edges interleave correctly.
+Wait for its edges with `tick(sim; clock=name)`.
+
+`phase` is measured from the current simulation time: before the simulation
+has started, the first toggle is at time `phase`; if clocks are added to a
+stopped simulation, the first toggle is `phase` after `sim.time` (or one
+`half_period` after it when `phase` is 0), so time never goes backwards.
+The simulator must not be running.
 """
 function add_clock!(sim::Simulator, name::Symbol; half_period::Integer=5, phase::Integer=0)
-    sim.running && error("Add clocks before calling start_clock!")
+    sim.running && error("Stop the clock (stop_clock!) before adding another one")
     half_period > 0 || throw(ArgumentError("half_period must be positive"))
+    phase >= 0 || throw(ArgumentError("phase must not be negative"))
     any(c -> c.name == name, sim.clocks) && error("Clock `$name` already exists")
     set_ptr = input_setter(sim.dut, sim.model, name, "a clock")
-    push!(sim.clocks, Clock(name, set_ptr, half_period, 0x00, phase, Condition(), Condition()))
+    first_toggle = sim.started ? sim.time + (phase > 0 ? phase : half_period) : Int64(phase)
+    push!(sim.clocks, Clock(name, set_ptr, half_period, 0x00, first_toggle, Condition(), Condition()))
     return sim
 end
 
@@ -156,6 +169,7 @@ function start_clock!(sim::Simulator, half_period::Union{Integer,Nothing}=nothin
                 end
             end
             Interop.eval_step!(sim.model, t)
+            sim.started = true
             for c in toggled
                 notify(c.value == 0x01 ? c.rising : c.falling)
             end

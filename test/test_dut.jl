@@ -15,9 +15,15 @@ build_root = mktempdir()
     lib2, _ = build_dut(counter_srcs, "counter"; build_dir=dir, include_dirs=counter_inc)
     @test lib2 == lib && mtime(lib2) == mtime1
 
-    # force=true rebuilds under the same key
+    # force=true rebuilds into a new library file, so a design that is still
+    # loaded can't make dlopen hand back the old code
     lib3, _ = build_dut(counter_srcs, "counter"; build_dir=dir, include_dirs=counter_inc, force=true)
-    @test lib3 == lib && isfile(lib3)
+    @test lib3 != lib && isfile(lib3) && !isfile(lib)
+    fresh = load_dut(counter_srcs, "counter"; build_dir=dir, include_dirs=counter_inc)
+    @test getfield(fresh, :lib_path) == lib3          # cache now points at the new build
+    settle!(fresh); settle!(dut)                       # old and new both still work
+    @test fresh.init_val == 7 && dut.init_val == 7
+    destroy!(fresh)
 
     # Parameters and defines change the build
     dut12 = load_dut(counter_srcs, "counter"; build_dir=joinpath(build_root, "counter12"),
@@ -135,4 +141,30 @@ end
     write(joinpath(users, "notes.txt"), "keep me")
     @test_throws ErrorException build_dut(counter_srcs, "counter"; include_dirs=counter_inc, build_dir=users)
     @test readdir(users) == ["notes.txt"]
+end
+
+@testset "Parallel builds of the same design" begin
+    # Two Julia processes build into one directory at once: the lock makes the
+    # second wait and reuse the first's build instead of deleting its files.
+    dir = joinpath(mktempdir(), "shared")
+    script = """
+    using VeriJul
+    lib, _ = build_dut($(repr(counter_srcs)), "counter"; build_dir=$(repr(dir)),
+                       include_dirs=$(repr(counter_inc)))
+    dut = VeriJul.Device.DUT(lib, "counter",
+                             VeriJul.Builder.extract_ports(joinpath(dirname(lib), "Vcounter.h")))
+    settle!(dut)
+    dut.init_val == 7 || error("bad build")
+    println(lib)
+    """
+    julia = `$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) -e $script`
+    outs = [IOBuffer() for _ in 1:2]
+    procs = [run(pipeline(julia; stdout=o, stderr=o); wait=false) for o in outs]
+    foreach(wait, procs)
+    for (p, o) in zip(procs, outs)
+        success(p) || println(String(take!(copy(o))))
+        @test success(p)
+    end
+    libs = [last(split(strip(String(take!(o))), '\n')) for o in outs]
+    @test libs[1] == libs[2]                           # one build, reused by the other
 end
