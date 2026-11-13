@@ -1,56 +1,185 @@
 module SimCore
 
-using ..Interop
 using Libdl
-export Simulator, start_clock!, stop_clock!
+using ..Interop
+using ..Interop: VerilatedModel
+using ..Device: Device, DUT
+
+export Simulator, start_clock!, stop_clock!, add_clock!, tick, reset!,
+       ClockStopped, TickTimeout
 
 """
-    Simulator(dut::VerilatedModel)
+    ClockStopped()
 
-Simulation state for a model: current time, clock value, and the
-`rising_edge`/`falling_edge` conditions testbenches wait on (see [`@tick`](@ref VeriJul.DSL.@tick)).
-The design must have an input port named `clk`.
+Thrown by [`tick`](@ref VeriJul.SimCore.tick) when the clock isn't running, or
+stops while a task is waiting for an edge.
 """
-mutable struct Simulator
-    dut::VerilatedModel
-    time::Int64
-    clk_val::UInt8
-    rising_edge::Condition  # The async primitive that testbenches wait on
-    falling_edge::Condition
-    clock_task::Union{Task,Nothing}
-    running::Bool
+struct ClockStopped <: Exception
+    msg::String
+end
+ClockStopped() = ClockStopped("the simulator clock is not running; call start_clock!(sim)")
+Base.showerror(io::IO, e::ClockStopped) = print(io, "ClockStopped: ", e.msg)
 
-    Simulator(dut::VerilatedModel) = new(dut, 0, 0x00, Condition(), Condition(), nothing, false)
+"""
+    TickTimeout(seconds)
+
+Thrown by [`tick`](@ref VeriJul.SimCore.tick) when the requested edges don't
+arrive within `timeout` seconds of wall-clock time.
+"""
+struct TickTimeout <: Exception
+    seconds::Float64
+end
+Base.showerror(io::IO, e::TickTimeout) =
+    print(io, "TickTimeout: no clock edge arrived within $(e.seconds) s")
+
+mutable struct Clock
+    name::Symbol
+    set_ptr::Ptr{Cvoid}
+    half_period::Int64
+    value::UInt8
+    next_toggle::Int64
+    rising::Condition
+    falling::Condition
 end
 
 """
-    start_clock!(sim, half_period=5) -> Task
+    Simulator(dut; clock=:clk, half_period=5)
 
-Starts a background task that toggles `clk` every `half_period` time units,
-evaluates the model on each edge and wakes any task waiting in [`@tick`](@ref VeriJul.DSL.@tick).
+Simulation state for a [`DUT`](@ref VeriJul.Device.DUT) (or a bare
+[`VerilatedModel`](@ref VeriJul.Interop.VerilatedModel)): the current time and
+the clocks that drive it.
+
+`clock` names the main clock input; [`tick`](@ref VeriJul.SimCore.tick) and
+[`@tick`](@ref VeriJul.DSL.@tick) wait on it unless told otherwise. Add more
+clocks with [`add_clock!`](@ref VeriJul.SimCore.add_clock!).
+
+`sim.time` is the simulation time of the most recent clock edge.
+"""
+mutable struct Simulator
+    dut::Union{DUT,VerilatedModel}
+    model::VerilatedModel
+    time::Int64
+    clocks::Vector{Clock}
+    clock_task::Union{Task,Nothing}
+    running::Bool
+    started::Bool   # true once the clocks have evaluated the design at least once
+end
+
+model_of(m::VerilatedModel) = m
+model_of(d::DUT) = Device.model(d)
+
+# Setter for a 1-bit control input (clock or reset). DUTs already hold the
+# pointers; bare models are looked up in the library. The setter is called
+# with a UInt8, so anything but a 1-bit input would get the wrong argument
+# type (wide ports even expect a pointer).
+function input_setter(dut::DUT, ::VerilatedModel, name::Symbol, what::AbstractString)
+    h = get(getfield(dut, :handles), name, nothing)
+    (h === nothing || h.port.direction != :in) &&
+        error("The design has no input port named `$name` to use as $what")
+    h.port.width == 1 ||
+        error("Port `$name` is $(h.port.width) bits wide; $what must be a 1-bit input")
+    return h.set_ptr
+end
+
+function input_setter(::VerilatedModel, model::VerilatedModel, name::Symbol, what::AbstractString)
+    f = Libdl.dlsym(model.lib_handle, Symbol("set_", name); throw_error=false)
+    f === nothing && error("The design has no input port named `$name` to use as $what")
+    return f
+end
+
+function Simulator(dut::Union{DUT,VerilatedModel}; clock::Symbol=:clk, half_period::Integer=5)
+    sim = Simulator(dut, model_of(dut), 0, Clock[], nothing, false, false)
+    add_clock!(sim, clock; half_period=half_period)
+    return sim
+end
+
+# Main-clock fields for the lower-level API: rising_edge, falling_edge, clk_val
+function Base.getproperty(sim::Simulator, s::Symbol)
+    s === :rising_edge  && return getfield(sim, :clocks)[1].rising
+    s === :falling_edge && return getfield(sim, :clocks)[1].falling
+    s === :clk_val      && return getfield(sim, :clocks)[1].value
+    return getfield(sim, s)
+end
+
+"""
+    add_clock!(sim, name; half_period=5, phase=0)
+
+Adds another 1-bit clock input. It toggles every `half_period` time units.
+All clocks run on the same timeline, so their edges interleave correctly.
+Wait for its edges with `tick(sim; clock=name)`.
+
+`phase` is measured from the current simulation time: before the simulation
+has started, the first toggle is at time `phase`; if clocks are added to a
+stopped simulation, the first toggle is `phase` after `sim.time` (or one
+`half_period` after it when `phase` is 0), so time never goes backwards.
+The simulator must not be running.
+"""
+function add_clock!(sim::Simulator, name::Symbol; half_period::Integer=5, phase::Integer=0)
+    sim.running && error("Stop the clock (stop_clock!) before adding another one")
+    half_period > 0 || throw(ArgumentError("half_period must be positive"))
+    phase >= 0 || throw(ArgumentError("phase must not be negative"))
+    any(c -> c.name == name, sim.clocks) && error("Clock `$name` already exists")
+    set_ptr = input_setter(sim.dut, sim.model, name, "a clock")
+    first_toggle = sim.started ? sim.time + (phase > 0 ? phase : half_period) : Int64(phase)
+    push!(sim.clocks, Clock(name, set_ptr, half_period, 0x00, first_toggle, Condition(), Condition()))
+    return sim
+end
+
+function find_clock(sim::Simulator, name::Union{Symbol,Nothing})
+    name === nothing && return sim.clocks[1]
+    i = findfirst(c -> c.name == name, sim.clocks)
+    i === nothing && error("No clock named `$name`; add it with add_clock!(sim, :$name)")
+    return sim.clocks[i]
+end
+
+function wake_all(sim::Simulator, err)
+    for c in sim.clocks
+        notify(c.rising, err; error=true)
+        notify(c.falling, err; error=true)
+    end
+end
+
+"""
+    start_clock!(sim[, half_period]) -> Task
+
+Starts the clocks in a background task. On each step it toggles the clocks
+due at the earliest time, evaluates the design (writing a waveform sample if
+tracing is on) and wakes tasks waiting in [`tick`](@ref VeriJul.SimCore.tick).
+
+Passing `half_period` changes the main clock's half period.
 Throws if the clock is already running.
 """
-function start_clock!(sim::Simulator, half_period::Integer=5)
-    # Starting a second oscillator would toggle the clock twice per step
+function start_clock!(sim::Simulator, half_period::Union{Integer,Nothing}=nothing)
     sim.running && error("Clock is already running; call stop_clock!(sim) first")
-
-    set_clk_ptr = Libdl.dlsym(sim.dut.lib_handle, :set_clk)
+    half_period === nothing || (sim.clocks[1].half_period = half_period)
     sim.running = true
 
-    # Launch the clock oscillator as a background coroutine
-    sim.clock_task = @async while sim.running
-        sim.clk_val = sim.clk_val == 0x01 ? 0x00 : 0x01
-        ccall(set_clk_ptr, Cvoid, (Ptr{Cvoid}, UInt8), sim.dut.ptr, sim.clk_val)
-
-        # Evaluate the model and dump the trace
-        Interop.eval_step!(sim.dut, sim.time)
-
-        # Wake any testbench code waiting for this edge
-        notify(sim.clk_val == 0x01 ? sim.rising_edge : sim.falling_edge)
-
-        # Advance time and hand control back to the Julia scheduler
-        sim.time += half_period
-        yield()
+    sim.clock_task = @async try
+        toggled = Clock[]
+        while sim.running
+            t = minimum(c.next_toggle for c in sim.clocks)
+            sim.time = t
+            empty!(toggled)
+            for c in sim.clocks
+                if c.next_toggle == t
+                    c.value ⊻= 0x01
+                    ccall(c.set_ptr, Cvoid, (Ptr{Cvoid}, UInt8), sim.model.ptr, c.value)
+                    c.next_toggle += c.half_period
+                    push!(toggled, c)
+                end
+            end
+            Interop.eval_step!(sim.model, t)
+            sim.started = true
+            for c in toggled
+                notify(c.value == 0x01 ? c.rising : c.falling)
+            end
+            yield()
+        end
+    catch err
+        # Never leave testbenches waiting on a clock that has died
+        sim.running = false
+        wake_all(sim, err)
+        rethrow()
     end
     return sim.clock_task
 end
@@ -58,15 +187,76 @@ end
 """
     stop_clock!(sim)
 
-Stops the background clock and waits for it to finish. Call this before
-`destroy!`-ing the model so the clock never touches freed memory.
+Stops the clocks and waits for the background task to finish. Tasks still
+waiting in [`tick`](@ref VeriJul.SimCore.tick) get a
+[`ClockStopped`](@ref VeriJul.SimCore.ClockStopped) error instead of hanging.
+Call this before `destroy!`-ing the design.
 """
 function stop_clock!(sim::Simulator)
     sim.running = false
     t = sim.clock_task
     t === nothing || wait(t)
     sim.clock_task = nothing
+    wake_all(sim, ClockStopped("the simulator clock was stopped"))
     return nothing
+end
+
+"""
+    tick(sim, n=1; clock=nothing, edge=:rising, timeout=nothing)
+
+Waits for `n` edges of a clock (the main clock unless `clock` is given).
+`edge` is `:rising` or `:falling`. `timeout` is a wall-clock limit in seconds;
+when it passes, a [`TickTimeout`](@ref VeriJul.SimCore.TickTimeout) is thrown.
+
+Throws [`ClockStopped`](@ref VeriJul.SimCore.ClockStopped) if the clock isn't
+running. [`@tick`](@ref VeriJul.DSL.@tick) is shorthand for this.
+"""
+function tick(sim::Simulator, n::Integer=1; clock::Union{Symbol,Nothing}=nothing,
+              edge::Symbol=:rising, timeout::Union{Real,Nothing}=nothing)
+    edge in (:rising, :falling) || throw(ArgumentError("edge must be :rising or :falling"))
+    n >= 0 || throw(ArgumentError("n must be non-negative"))
+    c = find_clock(sim, clock)
+    cond = edge === :rising ? c.rising : c.falling
+    n == 0 && return sim
+
+    timer = nothing
+    done = Ref(false)
+    if timeout !== nothing
+        waiter = current_task()
+        timer = Timer(timeout) do _
+            # Interrupt the wait unless the task has already moved on
+            done[] || schedule(waiter, TickTimeout(timeout); error=true)
+        end
+    end
+    try
+        for _ in 1:n
+            sim.running || throw(ClockStopped())
+            wait(cond)
+        end
+    finally
+        done[] = true
+        timer === nothing || close(timer)
+    end
+    return sim
+end
+
+"""
+    reset!(sim, port=:rst; cycles=2, active_high=true)
+
+Asserts a reset input for `cycles` rising edges of the main clock, then
+releases it. The clock must be running. Use `active_high=false` for an
+active-low reset such as `rst_n`.
+"""
+function reset!(sim::Simulator, port::Symbol=:rst; cycles::Integer=2, active_high::Bool=true)
+    set_ptr = input_setter(sim.dut, sim.model, port, "a reset")
+    set(v) = ccall(set_ptr, Cvoid, (Ptr{Cvoid}, UInt8), sim.model.ptr, UInt8(v == active_high))
+    set(true)
+    try
+        tick(sim, cycles)
+    finally
+        sim.model.ptr == C_NULL || set(false)
+    end
+    return sim
 end
 
 end

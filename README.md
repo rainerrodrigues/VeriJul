@@ -13,7 +13,7 @@ VCD waveform output.
 ## Requirements
 
 - Julia 1.10 or newer
-- Verilator 4.200 or newer
+- Verilator 4.200 or newer on `PATH` (or set `VERIJUL_VERILATOR` to its path)
 - A C++17 compiler (`g++` or `clang++`; set `CXX` to choose)
 
 Tested on Linux and macOS. Windows is not supported yet.
@@ -35,31 +35,35 @@ Pkg.add("VeriJul")
 ```julia
 using VeriJul
 
-lib, bindings = build_dut("examples/filter.v", "filter")
-include(bindings)
-using .AutoBindings
+dut = load_dut("examples/filter.v", "filter")   # build (cached) and load
+enable_trace!(dut, "filter.vcd")                 # optional waveform
 
-dut = VerilatedModel(lib)
-sim = Simulator(dut)
-AutoBindings.enable_trace!(dut, "filter.vcd")
+sim = Simulator(dut)                             # drives the `clk` input
+start_clock!(sim)
 
-@testbench function ramp(sim)
-    AutoBindings.set_in_data!(sim.dut, 0xFF)
-    for cycle in 1:6
-        @tick sim
-        println("cycle $cycle: out_data = ", AutoBindings.get_out_data(sim.dut))
-    end
+dut.in_data = 0xFF
+for cycle in 1:6
+    @tick sim                                    # wait for a rising edge
+    println("cycle $cycle: out_data = ", dut.out_data)
 end
 
-start_clock!(sim)
-wait(launch_ramp(sim))
 stop_clock!(sim)
 destroy!(dut)
 ```
 
-The full script is in [`examples/filter_demo.jl`](examples/filter_demo.jl).
-See the [documentation](https://rainerrodrigues.github.io/VeriJul.jl/dev/) for a
-step-by-step guide and the API reference.
+Also included:
+
+- multi-file designs, include directories, `` `define``s and parameter overrides
+- several clocks with their own periods (`add_clock!`), `@tick sim n clock=:clk_b`
+- `reset!`, and timeouts so stuck testbenches fail instead of hanging
+- ports of any width, with wide ports as `BigInt`
+
+Builds are cached in VeriJul's own scratch space, so nothing is written to
+your working directory unless you pass `build_dir`.
+
+The [documentation](https://rainerrodrigues.github.io/VeriJul.jl/dev/) has
+tutorials for each of these and the API reference. Runnable scripts are in
+[`examples/`](examples/).
 
 ## Running the tests
 

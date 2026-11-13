@@ -1,0 +1,170 @@
+# Integration test for load_dut / DUT / multi-clock simulation on real Verilator builds.
+
+examples = joinpath(dirname(@__DIR__), "examples")
+counter_srcs = [joinpath(examples, "counter", "counter.v"), joinpath(examples, "counter", "inverter.v")]
+counter_inc = [joinpath(examples, "counter", "include")]
+build_root = mktempdir()
+
+@testset "Build options and caching" begin
+    dir = joinpath(build_root, "counter")
+    dut = load_dut(counter_srcs, "counter"; build_dir=dir, include_dirs=counter_inc)
+    lib = getfield(dut, :lib_path)
+    mtime1 = mtime(lib)
+
+    # Unchanged design: no rebuild
+    lib2, _ = build_dut(counter_srcs, "counter"; build_dir=dir, include_dirs=counter_inc)
+    @test lib2 == lib && mtime(lib2) == mtime1
+
+    # force=true rebuilds into a new library file, so a design that is still
+    # loaded can't make dlopen hand back the old code
+    lib3, _ = build_dut(counter_srcs, "counter"; build_dir=dir, include_dirs=counter_inc, force=true)
+    @test lib3 != lib && isfile(lib3) && !isfile(lib)
+    fresh = load_dut(counter_srcs, "counter"; build_dir=dir, include_dirs=counter_inc)
+    @test getfield(fresh, :lib_path) == lib3          # cache now points at the new build
+    settle!(fresh); settle!(dut)                       # old and new both still work
+    @test fresh.init_val == 7 && dut.init_val == 7
+    destroy!(fresh)
+
+    # Parameters and defines change the build
+    dut12 = load_dut(counter_srcs, "counter"; build_dir=joinpath(build_root, "counter12"),
+                     include_dirs=counter_inc, parameters=Dict("WIDTH" => 12),
+                     defines=Dict("INIT_VAL" => "8'd42"))
+    @test Dict(p.name => p.width for p in ports(dut12))["count"] == 12
+    settle!(dut); settle!(dut12)
+    @test dut.init_val == 7
+    @test dut12.init_val == 42
+
+    @test_throws ErrorException build_dut(counter_srcs, "counter"; build_dir=dir)  # missing include dir
+    destroy!(dut12)
+    destroy!(dut)
+end
+
+@testset "Ports, clocks, reset and waveforms" begin
+    dut = load_dut(counter_srcs, "counter"; build_dir=joinpath(build_root, "counter"),
+                   include_dirs=counter_inc)
+    vcd = joinpath(build_root, "counter.vcd")
+    enable_trace!(dut, vcd)
+
+    sim = Simulator(dut)
+    add_clock!(sim, :clk_slow; half_period=15)
+    start_clock!(sim)
+    reset!(sim)
+    @test dut.count == 0 && dut.slow_count == 0
+
+    dut.step = 3
+    @tick sim 4
+    @test dut.count == 12
+
+    before = dut.slow_count
+    @tick sim 3 clock=:clk_slow
+    @test dut.slow_count == before + 3
+
+    x = big(2)^99 + big(2)^70 + 0xabcdef
+    dut.wide_in = x
+    @tick sim
+    @test dut.wide_in == x
+    @test dut.wide_out == (big(2)^100 - 1) ⊻ x
+    @test dut.upper === UInt64(x >> 36)
+
+    @test_throws ErrorException dut.count = 1
+    stop_clock!(sim)
+    destroy!(dut)
+    @test filesize(vcd) > 0
+end
+
+@testset "Two designs at once" begin
+    filt = load_dut(joinpath(examples, "filter.v"), "filter"; build_dir=joinpath(build_root, "filter"))
+    cnt = load_dut(counter_srcs, "counter"; build_dir=joinpath(build_root, "counter"),
+                   include_dirs=counter_inc)
+    fsim, csim = Simulator(filt), Simulator(cnt)
+    start_clock!(fsim); start_clock!(csim)
+    reset!(csim)
+    filt.in_data = 0xFF
+    cnt.step = 1
+    @tick fsim 6
+    @tick csim 2
+    @test filt.out_data == 0xFF
+    @test cnt.count >= 2
+    stop_clock!(fsim); stop_clock!(csim)
+    destroy!(filt); destroy!(cnt)
+end
+
+@testset "Reloading and duplicate models" begin
+    # Each model has its own context, so a second model of the same design can
+    # be created while the first is mid-simulation (and after it is destroyed,
+    # even where the OS keeps the library loaded).
+    args = (counter_srcs, "counter")
+    kw = (build_dir=joinpath(build_root, "counter"), include_dirs=counter_inc)
+    a = load_dut(args...; kw...)
+    asim = Simulator(a); start_clock!(asim); reset!(asim)
+    a.step = 1
+    @tick asim 3
+    stop_clock!(asim)
+    @test a.count == 3 && asim.time > 0
+
+    # Created while `a` is alive at a non-zero time
+    b = load_dut(args...; kw...)
+    bsim = Simulator(b); start_clock!(bsim); reset!(bsim)
+    b.step = 2
+    @tick bsim 2
+    stop_clock!(bsim)
+    @test b.count == 4
+    @test a.count == 3                              # independent state
+    destroy!(a); destroy!(b)
+
+    c = load_dut(args...; kw...)
+    @test c.count isa UInt8
+    destroy!(c)
+end
+
+@testset "Default build location" begin
+    # Without build_dir nothing is written to the working directory
+    work = mktempdir()
+    dut = cd(work) do
+        load_dut(counter_srcs, "counter"; include_dirs=counter_inc)
+    end
+    @test isempty(readdir(work))
+    lib = getfield(dut, :lib_path)
+    @test startswith(lib, VeriJul.Builder.build_cache())
+    @test isfile(joinpath(dirname(lib), VeriJul.Builder.BUILD_MARKER))
+
+    # Cached: the same design loads from the same library
+    again = load_dut(counter_srcs, "counter"; include_dirs=counter_inc)
+    @test getfield(again, :lib_path) == lib
+    # Different options get their own folder
+    other = load_dut(counter_srcs, "counter"; include_dirs=counter_inc, parameters=Dict("WIDTH" => 4))
+    @test dirname(getfield(other, :lib_path)) != dirname(lib)
+    foreach(destroy!, (dut, again, other))
+
+    # A user's non-empty directory is refused, and its files survive
+    users = mktempdir()
+    write(joinpath(users, "notes.txt"), "keep me")
+    @test_throws ErrorException build_dut(counter_srcs, "counter"; include_dirs=counter_inc, build_dir=users)
+    @test readdir(users) == ["notes.txt"]
+end
+
+@testset "Parallel builds of the same design" begin
+    # Two Julia processes build into one directory at once: the lock makes the
+    # second wait and reuse the first's build instead of deleting its files.
+    dir = joinpath(mktempdir(), "shared")
+    script = """
+    using VeriJul
+    lib, _ = build_dut($(repr(counter_srcs)), "counter"; build_dir=$(repr(dir)),
+                       include_dirs=$(repr(counter_inc)))
+    dut = VeriJul.Device.DUT(lib, "counter",
+                             VeriJul.Builder.extract_ports(joinpath(dirname(lib), "Vcounter.h")))
+    settle!(dut)
+    dut.init_val == 7 || error("bad build")
+    println(lib)
+    """
+    julia = `$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) -e $script`
+    outs = [IOBuffer() for _ in 1:2]
+    procs = [run(pipeline(julia; stdout=o, stderr=o); wait=false) for o in outs]
+    foreach(wait, procs)
+    for (p, o) in zip(procs, outs)
+        success(p) || println(String(take!(copy(o))))
+        @test success(p)
+    end
+    libs = [last(split(strip(String(take!(o))), '\n')) for o in outs]
+    @test libs[1] == libs[2]                           # one build, reused by the other
+end
